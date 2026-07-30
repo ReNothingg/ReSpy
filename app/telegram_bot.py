@@ -1586,15 +1586,6 @@ def build_dispatcher(
         try:
             calculation = calculate(expression)
         except CalculatorError as exc:
-            await _animate_calculator_draft(
-                archive.bot,
-                message,
-                [
-                    "",
-                    "🧮 <b>Разбираю выражение…</b>",
-                    f"⚠️ <b>{html.escape(str(exc))}</b>",
-                ],
-            )
             await message.answer(
                 "⚠️ <b>Не получилось посчитать</b>\n\n"
                 f"{html.escape(str(exc))}\n\n"
@@ -1604,18 +1595,6 @@ def build_dispatcher(
             return
 
         final_text = _calculator_result_text(calculation)
-        await _animate_calculator_draft(
-            archive.bot,
-            message,
-            [
-                "",
-                "🧮 <b>Разбираю выражение…</b>\n"
-                f"<code>{html.escape(calculation.source)}</code>",
-                "⚙️ <b>Считаю…</b>\n"
-                f"<code>{html.escape(calculation.source)}</code>",
-                final_text,
-            ],
-        )
         copy_markup = InlineKeyboardMarkup(
             inline_keyboard=[
                 [

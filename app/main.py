@@ -102,10 +102,11 @@ async def serve(mode: RuntimeMode = "all") -> None:
                         path.unlink(missing_ok=True)
                 break
             except sqlite3.OperationalError as error:
+                database_error = str(error).lower()
                 if (
-                    "locked" not in str(error).lower()
-                    or attempt == DATABASE_STARTUP_ATTEMPTS
-                ):
+                    "locked" not in database_error
+                    and "locking protocol" not in database_error
+                ) or attempt == DATABASE_STARTUP_ATTEMPTS:
                     raise
                 delay = min(attempt * 2, 10)
                 logger.warning(
