@@ -3,9 +3,9 @@ from __future__ import annotations
 import mimetypes
 from io import BytesIO
 from pathlib import Path
+from typing import Protocol
 from urllib.parse import quote
 
-from aiogram import Bot
 from fastapi import FastAPI, Form, HTTPException, Request, status
 from fastapi.responses import (
     FileResponse,
@@ -28,6 +28,12 @@ from app.security import (
 
 
 COOKIE_NAME = "respy_session"
+
+
+class TelegramFileDownloader(Protocol):
+    async def download(self, file_id: str, destination: BytesIO) -> None: ...
+
+
 GIFT_STATUS_LABELS = {
     "sent": "Отправлен",
     "received": "Получен",
@@ -57,7 +63,9 @@ GIFT_EVENT_LABELS = {
 
 
 def build_web_app(
-    db: Database, settings: Settings, bot: Bot | None = None
+    db: Database,
+    settings: Settings,
+    bot: TelegramFileDownloader | None = None,
 ) -> FastAPI:
     base_dir = Path(__file__).resolve().parent
     templates = Jinja2Templates(directory=base_dir / "templates")

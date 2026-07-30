@@ -55,4 +55,18 @@ pip install -e .
 python -m app.main
 ```
 
+### Alwaysdata
+
+На Alwaysdata бот и веб-панель должны работать раздельно. Иначе платформа
+останавливает Telegram polling вместе с сайтом после периода без HTTP-запросов.
+
+- Site: команда `python3 -m app.web_main`, рабочая директория `ReSpy`,
+  окружение `HOST=:: PYTHONUNBUFFERED=1`. `PORT` передаёт Alwaysdata.
+- Service: команда `python3 -m app.bot_main`, рабочая директория `ReSpy`,
+  окружение `PYTHONUNBUFFERED=1`. Monitoring command можно оставить пустым.
+
+Оба процесса используют один `.env`, базу и каталог медиа. Запускать
+`python3 -m app.main` одновременно в Site и Service нельзя: это создаст два
+Telegram polling и заблокирует MTProto session-файлы.
+
 Срок хранения задаётся через `MEDIA_RETENTION_HOURS` (по умолчанию 24), период очистки через `MEDIA_CLEANUP_INTERVAL_SECONDS` (раз в час).

@@ -2,23 +2,25 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from contextlib import suppress
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 import uvicorn
-from aiogram import Bot
-from aiogram.types import BotCommand
 
 from app.config import Settings
 from app.database import Database
-from app.mtproto_archive import MtprotoBusinessArchive
-from app.telegram_bot import TelegramArchive, build_dispatcher
-from app.user_session_archive import UserSessionArchive, session_file
-from app.web import build_web_app
+
+if TYPE_CHECKING:
+    from aiogram import Bot
+
+    from app.user_session_archive import UserSessionArchive
 
 
 logger = logging.getLogger(__name__)
+RuntimeMode = Literal["all", "bot", "web"]
 
 MTPROTO_DISABLED_MESSAGE = (
     "⚠️ <b>Скрытые фото отключены</b>\n\n"
@@ -64,7 +66,7 @@ async def run_optional_user_archive(
     await asyncio.Event().wait()
 
 
-async def serve() -> None:
+async def serve(mode: RuntimeMode = "all") -> None:
     settings = Settings.from_env()
     handlers: list[logging.Handler] = [logging.StreamHandler()]
     if settings.log_path:
@@ -92,93 +94,123 @@ async def serve() -> None:
         if legacy_avatar_root in path.parents:
             path.unlink(missing_ok=True)
 
-    bot = Bot(settings.bot_token)
-    archive = TelegramArchive(bot, db, settings)
-    await archive.initialize()
-    mtproto_archive = MtprotoBusinessArchive(archive)
-    user_session_archive = UserSessionArchive(archive, mtproto_archive)
-    archive.chat_notification_manager = user_session_archive
-    dispatcher = build_dispatcher(
-        archive,
-        mtproto_archive.request_catch_up,
-    )
-    web_app = build_web_app(db, settings, bot)
-    server = uvicorn.Server(
-        uvicorn.Config(
-            web_app,
-            host=settings.host,
-            port=settings.port,
-            log_level=settings.log_level.lower(),
-            access_log=False,
-        )
-    )
+    bot: Any = None
+    dispatcher = None
+    server = None
+    tasks: set[asyncio.Task[object]] = set()
 
-    await bot.set_my_commands(
-        [
-            BotCommand(command="start", description="Статус и подключение"),
-            BotCommand(command="id", description="Показать Telegram ID"),
-            BotCommand(command="cal", description="Красивый калькулятор"),
-            BotCommand(command="mute", description="Удалять входящие в чате"),
-            BotCommand(command="unmute", description="Отключить мут в чате"),
-            BotCommand(command="gifts", description="Статистика подарков"),
-            BotCommand(command="archive", description="Открыть веб-архив"),
-        ]
-    )
+    if mode in {"all", "web"}:
+        from app.web import build_web_app
 
-    tasks = {
-        asyncio.create_task(
-            dispatcher.start_polling(
-                bot,
-                allowed_updates=[
-                    "message",
-                    "business_connection",
-                    "business_message",
-                    "edited_business_message",
-                    "deleted_business_messages",
-                ],
-            ),
-            name="telegram-polling",
-        ),
-        asyncio.create_task(server.serve(), name="web-server"),
-        asyncio.create_task(
-            archive.gift_profile_monitor(), name="gift-profile-monitor"
-        ),
-        asyncio.create_task(
-            archive.media_cleanup_loop(), name="media-cleanup"
-        ),
-    }
-    if settings.telegram_api_id and settings.telegram_api_hash:
-        tasks.add(
-            asyncio.create_task(
-                mtproto_archive.run(), name="mtproto-business-archive"
+        if mode == "web":
+            from app.telegram_files import BotApiFileDownloader
+
+            bot = BotApiFileDownloader(settings.bot_token)
+
+    if mode in {"all", "bot"}:
+        from aiogram import Bot
+        from aiogram.types import BotCommand
+
+        from app.mtproto_archive import MtprotoBusinessArchive
+        from app.telegram_bot import TelegramArchive, build_dispatcher
+        from app.user_session_archive import UserSessionArchive, session_file
+
+        bot = Bot(settings.bot_token)
+
+    if mode in {"all", "web"}:
+        web_app = build_web_app(db, settings, bot)
+        server = uvicorn.Server(
+            uvicorn.Config(
+                web_app,
+                host=settings.host,
+                port=settings.port,
+                log_level=settings.log_level.lower(),
+                access_log=False,
             )
         )
-        if (
-            settings.mtproto_user_session_path
-            and session_file(settings.mtproto_user_session_path).exists()
-        ):
+        tasks.add(asyncio.create_task(server.serve(), name="web-server"))
+
+    if mode in {"all", "bot"}:
+        archive = TelegramArchive(bot, db, settings)
+        await archive.initialize()
+        mtproto_archive = MtprotoBusinessArchive(archive)
+        user_session_archive = UserSessionArchive(archive, mtproto_archive)
+        archive.chat_notification_manager = user_session_archive
+        dispatcher = build_dispatcher(
+            archive,
+            mtproto_archive.request_catch_up,
+        )
+
+        await bot.set_my_commands(
+            [
+                BotCommand(command="start", description="Статус и подключение"),
+                BotCommand(command="id", description="Показать Telegram ID"),
+                BotCommand(command="cal", description="Красивый калькулятор"),
+                BotCommand(command="mute", description="Удалять входящие в чате"),
+                BotCommand(command="unmute", description="Отключить мут в чате"),
+                BotCommand(command="gifts", description="Статистика подарков"),
+                BotCommand(command="archive", description="Открыть веб-архив"),
+            ]
+        )
+
+        tasks.update(
+            {
+                asyncio.create_task(
+                    dispatcher.start_polling(
+                        bot,
+                        allowed_updates=[
+                            "message",
+                            "business_connection",
+                            "business_message",
+                            "edited_business_message",
+                            "deleted_business_messages",
+                        ],
+                    ),
+                    name="telegram-polling",
+                ),
+                asyncio.create_task(
+                    archive.gift_profile_monitor(), name="gift-profile-monitor"
+                ),
+                asyncio.create_task(
+                    archive.media_cleanup_loop(), name="media-cleanup"
+                ),
+            }
+        )
+
+        if settings.telegram_api_id and settings.telegram_api_hash:
             tasks.add(
                 asyncio.create_task(
-                    run_optional_user_archive(
-                        user_session_archive,
-                        bot,
-                        settings.owner_telegram_id,
-                    ),
-                    name="mtproto-user-archive",
+                    mtproto_archive.run(), name="mtproto-business-archive"
                 )
             )
+            if (
+                settings.mtproto_user_session_path
+                and session_file(settings.mtproto_user_session_path).exists()
+            ):
+                tasks.add(
+                    asyncio.create_task(
+                        run_optional_user_archive(
+                            user_session_archive,
+                            bot,
+                            settings.owner_telegram_id,
+                        ),
+                        name="mtproto-user-archive",
+                    )
+                )
+            else:
+                logger.warning(
+                    "MTProto user archive is disabled: authorize it with "
+                    "python -m app.auth_user_session"
+                )
+                await notify_mtproto_disabled(bot, settings.owner_telegram_id)
         else:
             logger.warning(
-                "MTProto user archive is disabled: authorize it with "
-                "python -m app.auth_user_session"
+                "MTProto archive is disabled: TELEGRAM_API_ID and "
+                "TELEGRAM_API_HASH are not configured"
             )
             await notify_mtproto_disabled(bot, settings.owner_telegram_id)
-    else:
-        logger.warning(
-            "MTProto archive is disabled: TELEGRAM_API_ID and "
-            "TELEGRAM_API_HASH are not configured"
-        )
-        await notify_mtproto_disabled(bot, settings.owner_telegram_id)
+
+    logger.info("ReSpy runtime started mode=%s tasks=%s", mode, len(tasks))
     try:
         done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
         for task in pending:
@@ -191,14 +223,24 @@ async def serve() -> None:
             if not task.done():
                 task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
-        with suppress(RuntimeError):
-            await dispatcher.stop_polling()
-        server.should_exit = True
-        await bot.session.close()
+        if dispatcher is not None:
+            with suppress(RuntimeError):
+                await dispatcher.stop_polling()
+        if server is not None:
+            server.should_exit = True
+        if mode in {"all", "bot"}:
+            await bot.session.close()
+
+
+def run_mode(mode: RuntimeMode) -> None:
+    asyncio.run(serve(mode))
 
 
 def run() -> None:
-    asyncio.run(serve())
+    raw_mode = os.getenv("RESPY_MODE", "all").strip().lower()
+    if raw_mode not in {"all", "bot", "web"}:
+        raise RuntimeError("RESPY_MODE must be one of: all, bot, web")
+    run_mode(cast(RuntimeMode, raw_mode))
 
 
 if __name__ == "__main__":

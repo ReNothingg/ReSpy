@@ -9,11 +9,13 @@ import re
 import secrets
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from enum import Enum
 from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import quote
 
 from aiogram import Bot, Dispatcher, Router
+from aiogram.client.default import Default
 from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramBadRequest, TelegramRetryAfter
 from aiogram.filters import Command
@@ -54,6 +56,7 @@ BUSINESS_MUTE_COMMAND = re.compile(
     r"(?:[ \t]+(?P<visible_text>[\s\S]*))?",
     flags=re.IGNORECASE,
 )
+_DROP_JSON_VALUE = object()
 
 
 def utcnow() -> str:
@@ -68,6 +71,38 @@ def user_name(user: Any | None) -> str:
         if part
     )
     return name or getattr(user, "username", None) or str(getattr(user, "id", ""))
+
+
+def _telegram_json_value(value: Any) -> Any:
+    if isinstance(value, Default):
+        return _DROP_JSON_VALUE
+    if isinstance(value, dict):
+        result: dict[str, Any] = {}
+        for key, item in value.items():
+            normalized = _telegram_json_value(item)
+            if normalized is not _DROP_JSON_VALUE:
+                result[str(key)] = normalized
+        return result
+    if isinstance(value, (list, tuple, set)):
+        result = []
+        for item in value:
+            normalized = _telegram_json_value(item)
+            if normalized is not _DROP_JSON_VALUE:
+                result.append(normalized)
+        return result
+    if isinstance(value, datetime):
+        return value.astimezone(UTC).isoformat()
+    if isinstance(value, Enum):
+        return _telegram_json_value(value.value)
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    return str(value)
+
+
+def model_json_data(model: Any) -> dict[str, Any]:
+    raw = model.model_dump(mode="python", exclude_none=True)
+    normalized = _telegram_json_value(raw)
+    return normalized if isinstance(normalized, dict) else {}
 
 
 def telegram_user_link(name: str, user_id: Any | None) -> str:
@@ -160,7 +195,7 @@ def media_info(message: Message) -> MediaInfo | None:
 
 def message_data(message: Message, owner_id: int) -> dict[str, Any]:
     sender = message.from_user
-    raw = message.model_dump(mode="json", exclude_none=True)
+    raw = model_json_data(message)
     return {
         "connection_id": message.business_connection_id,
         "chat_id": message.chat.id,
@@ -230,7 +265,7 @@ def gift_data(message: Message, owner_id: int) -> dict[str, Any] | None:
         counterparty_name = user_name(counterparty)
         counterparty_username = counterparty.username
 
-    raw = message.model_dump(mode="json", exclude_none=True)
+    raw = model_json_data(message)
     common = {
         "connection_id": connection_id,
         "chat_id": message.chat.id,
@@ -373,7 +408,7 @@ class TelegramArchive:
                 "owner_username": connection.user.username,
                 "is_enabled": connection.is_enabled,
                 "rights": (
-                    connection.rights.model_dump(mode="json", exclude_none=True)
+                    model_json_data(connection.rights)
                     if connection.rights
                     else {}
                 ),
@@ -407,7 +442,7 @@ class TelegramArchive:
                 self._delete_muted_business_message(message),
                 name=f"mute-delete-{message.chat.id}-{message.message_id}",
             )
-        chat = message.chat.model_dump(mode="json", exclude_none=True)
+        chat = model_json_data(message.chat)
         await self.db.upsert_chat(connection_id, chat, data["sent_at"])
         media = media_info(message)
         if media:
