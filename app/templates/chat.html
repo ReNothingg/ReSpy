@@ -1,0 +1,71 @@
+{% extends "base.html" %}
+{% block title %}{{ chat.title }} · ReSpy{% endblock %}
+{% block content %}
+<section class="panel archive-panel">
+  <form class="filterbar chat-toolbar" method="get">
+    <a class="chat-identity" href="/" aria-label="Вернуться к чатам">
+      <span class="avatar toolbar-avatar">
+        {% if chat.avatar_file_id %}
+        <img src="/avatars/{{ chat.connection_id }}/{{ chat.chat_id }}" alt="">
+        {% else %}
+        {{ chat.title[:1] | upper }}
+        {% endif %}
+      </span>
+      <span class="chat-identity-text">
+        <strong>{{ chat.title }}</strong>
+        {% if chat.username %}<small>@{{ chat.username }}</small>{% endif %}
+        <small>ID {{ chat.chat_id }}</small>
+      </span>
+    </a>
+    <label class="search grow">
+      <span>⌕</span>
+      <input name="q" value="{{ query }}" placeholder="Найти текст сообщения">
+    </label>
+    <select name="event" onchange="this.form.submit()">
+      <option value="all" {% if event_filter == "all" %}selected{% endif %}>Все сообщения</option>
+      <option value="deleted" {% if event_filter == "deleted" %}selected{% endif %}>Только удалённые</option>
+      <option value="edited" {% if event_filter == "edited" %}selected{% endif %}>Только изменённые</option>
+    </select>
+    <button class="secondary-button" type="submit">Найти</button>
+  </form>
+
+  <div class="message-list" data-scroll-bottom="{{ 'true' if not query and event_filter == 'all' else 'false' }}">
+    {% for message in messages %}
+    <article class="message-row {{ 'outgoing' if message.is_outgoing else 'incoming' }}">
+      <div class="message-card {{ 'is-deleted' if message.is_deleted }}">
+        {% if message.media_path %}
+        <a class="media-preview" href="/media/{{ message.id }}" target="_blank">
+          {% if message.content_type == "photo" %}
+          <img src="/media/{{ message.id }}" alt="Сохранённое фото" loading="lazy">
+          {% elif message.content_type == "video" %}
+          <video src="/media/{{ message.id }}" preload="metadata" controls></video>
+          {% else %}
+          <span class="file-tile">📎 <b>{{ message.media_name or message.content_type }}</b></span>
+          {% endif %}
+        </a>
+        {% elif message.media_error %}
+        <div class="media-error">⚠️ Медиа не сохранено: {{ message.media_error }}</div>
+        {% endif %}
+
+        {% if message.text or message.caption %}
+        <p class="message-text">{{ message.text or message.caption }}</p>
+        {% elif not message.media_path %}
+        <p class="message-text muted">[{{ message.content_type }}]</p>
+        {% endif %}
+
+        {% if message.content_type != "text" or message.is_deleted or message.edit_count %}
+        <footer class="message-footer">
+          {% if message.content_type != "text" %}<span class="type-chip">{{ message.content_type }}</span>{% endif %}
+          {% if message.is_deleted %}<span class="deleted-chip">⌫ Удалено</span>{% endif %}
+          {% if message.edit_count %}<a href="/messages/{{ message.id }}" class="edited-chip">✎ {{ message.edit_count }}</a>{% endif %}
+        </footer>
+        {% endif %}
+      </div>
+      <a class="message-time" href="/messages/{{ message.id }}" title="Открыть детали · {{ message.sent_at[:19].replace('T', ' ') }}">{{ message.sent_at[11:16] }}</a>
+    </article>
+    {% else %}
+    <div class="empty-state"><span>⌕</span><h3>Ничего не найдено</h3></div>
+    {% endfor %}
+  </div>
+</section>
+{% endblock %}

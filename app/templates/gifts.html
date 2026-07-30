@@ -1,0 +1,111 @@
+{% extends "base.html" %}
+{% block title %}Подарки · ReSpy{% endblock %}
+{% block content %}
+<nav class="breadcrumbs"><a href="/">Архив</a><span>›</span><b>Подарки</b></nav>
+
+<section class="hero gift-hero">
+  <div>
+    <p class="eyebrow">Архив</p>
+    <h1>Подарки</h1>
+    <p class="muted">Отправка, получение, апгрейды и исчезновения.</p>
+  </div>
+  <div class="gift-orb" aria-hidden="true">🎁</div>
+</section>
+
+<section class="stats-grid gift-stats-grid">
+  <article class="stat-card">
+    <span class="stat-icon gold">П</span>
+    <div><strong>{{ stats.total }}</strong><span>всего подарков</span></div>
+  </article>
+  <article class="stat-card">
+    <span class="stat-icon violet">↑</span>
+    <div><strong>{{ stats.sent }}</strong><span>отправлено</span></div>
+  </article>
+  <article class="stat-card">
+    <span class="stat-icon blue">↓</span>
+    <div><strong>{{ stats.received }}</strong><span>получено</span></div>
+  </article>
+  <article class="stat-card">
+    <span class="stat-icon amber">◆</span>
+    <div><strong>{{ stats.upgraded }}</strong><span>вскрыто</span></div>
+  </article>
+  <article class="stat-card">
+    <span class="stat-icon red">—</span>
+    <div><strong>{{ stats.missing }}</strong><span>исчезло</span></div>
+  </article>
+</section>
+
+<div class="dashboard-grid gifts-layout">
+  <section class="panel">
+    <form class="filterbar" method="get">
+      <select name="direction" onchange="this.form.submit()">
+        <option value="all" {% if direction == "all" %}selected{% endif %}>Все направления</option>
+        <option value="sent" {% if direction == "sent" %}selected{% endif %}>Отправленные</option>
+        <option value="received" {% if direction == "received" %}selected{% endif %}>Полученные</option>
+      </select>
+      <select name="status_filter" onchange="this.form.submit()">
+        <option value="all" {% if status_filter == "all" %}selected{% endif %}>Все статусы</option>
+        {% for value, label in status_labels.items() %}
+        <option value="{{ value }}" {% if status_filter == value %}selected{% endif %}>{{ label }}</option>
+        {% endfor %}
+      </select>
+    </form>
+    <div class="gift-list">
+      {% for gift in gifts %}
+      <a class="gift-row" href="/gifts/{{ gift.id }}">
+        <span class="gift-token {{ gift.status }}">🎁</span>
+        <span class="gift-row-main">
+          <span>
+            <strong>{{ gift.unique_name or gift.title }}</strong>
+            {% if gift.unique_number %}<b>#{{ gift.unique_number }}</b>{% endif %}
+          </span>
+          <small>
+            {{ "Для" if gift.direction == "sent" else "От" }}
+            {{ gift.counterparty_name or gift.chat_title }}
+            {% if gift.star_count %}· {{ gift.star_count }} Stars{% endif %}
+          </small>
+        </span>
+        <span class="gift-status {{ gift.status }}">
+          {{ status_labels.get(gift.status, gift.status) }}
+          {% if gift.confidence == "inferred" %}<i>не точно</i>{% endif %}
+        </span>
+        <time>{{ gift.updated_at[:16].replace("T", " ") }}</time>
+        <span class="chevron">›</span>
+      </a>
+      {% else %}
+      <div class="empty-state">
+        <span>🎁</span>
+        <h3>Подарков пока нет</h3>
+        <p>Новые подарки появятся после получения соответствующего Business-сообщения.</p>
+      </div>
+      {% endfor %}
+    </div>
+  </section>
+
+  <aside class="panel activity-panel">
+    <div class="panel-head">
+      <div>
+        <p class="eyebrow">Активность</p>
+        <h2>События подарков</h2>
+      </div>
+    </div>
+    <div class="activity-list">
+      {% for event in events %}
+      <a class="activity-row" href="/gifts/{{ event.gift_id }}">
+        <span class="event-dot gift-event">✦</span>
+        <div>
+          <strong>{{ event_labels.get(event.event_type, event.event_type) }}</strong>
+          <span>{{ event.unique_name or event.title }} · {{ event.counterparty_name }}</span>
+          <time>
+            {{ event.created_at[:16].replace("T", " ") }}
+            {% if event.confidence == "inferred" %}· предположение{% endif %}
+          </time>
+        </div>
+      </a>
+      {% else %}
+      <div class="empty-state compact"><span>✓</span><p>Событий пока нет.</p></div>
+      {% endfor %}
+    </div>
+  </aside>
+</div>
+{% endblock %}

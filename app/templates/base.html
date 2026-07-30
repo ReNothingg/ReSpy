@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="light dark">
+  <meta name="theme-color" content="#ffffff">
+  <title>{% block title %}ReSpy{% endblock %}</title>
+  <link rel="stylesheet" href="{{ url_for('static', path='style.css') }}">
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <script src="{{ url_for('static', path='app.js') }}" defer></script>
+</head>
+<body>
+  {% block body %}
+  <header class="topbar">
+    <a class="brand" href="/">
+      <span class="brand-mark">R</span>
+      <span>
+        <strong>ReSpy</strong>
+        <small>Telegram Business</small>
+      </span>
+    </a>
+    <nav class="topnav" aria-label="Разделы">
+      <a class="{{ 'active' if request.url.path == '/' else '' }}" href="/">Чаты</a>
+      <a class="{{ 'active' if request.url.path.startswith('/gifts') else '' }}" href="/gifts">Подарки</a>
+    </nav>
+    <div class="topbar-actions">
+      <span class="status"><i></i><span>Активен</span></span>
+      <form method="post" action="/logout">
+        <button class="icon-button" type="submit" aria-label="Выйти" title="Выйти">Выйти</button>
+      </form>
+    </div>
+  </header>
+  <main class="shell">
+    {% block content %}{% endblock %}
+  </main>
+  {% endblock %}
+</body>
+</html>

@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% block title %}Сообщение #{{ message.message_id }} · ReSpy{% endblock %}
+{% block content %}
+<nav class="breadcrumbs">
+  <a href="/">Архив</a><span>›</span>
+  <a href="/chats/{{ message.connection_id }}/{{ message.chat_id }}">Чат</a><span>›</span>
+  <b>#{{ message.message_id }}</b>
+</nav>
+
+<section class="detail-heading">
+  <div>
+    <p class="eyebrow">Сообщение</p>
+    <h1>Сообщение #{{ message.message_id }}</h1>
+  </div>
+  <div>
+    {% if message.is_deleted %}<span class="deleted-chip">⌫ Удалено</span>{% endif %}
+    {% if message.edit_count %}<span class="edited-chip">✎ Изменено {{ message.edit_count }} раз</span>{% endif %}
+  </div>
+</section>
+
+<div class="detail-grid">
+  <section class="panel detail-card">
+    <h2>Текущая копия</h2>
+    <dl class="metadata">
+      <div><dt>Отправитель</dt><dd>{{ message.sender_name }}</dd></div>
+      <div><dt>Дата</dt><dd>{{ message.sent_at[:19].replace("T", " ") }}</dd></div>
+      <div><dt>Тип</dt><dd>{{ message.content_type }}</dd></div>
+      <div><dt>Направление</dt><dd>{{ "Исходящее" if message.is_outgoing else "Входящее" }}</dd></div>
+    </dl>
+    {% if message.media_path %}
+    <a class="primary-button inline" href="/media/{{ message.id }}" target="_blank">Открыть сохранённое медиа ↗</a>
+    {% endif %}
+    <div class="copy-block">{{ message.text or message.caption or "[Без текста]" }}</div>
+  </section>
+
+  <section class="panel detail-card">
+    <h2>История изменений</h2>
+    <div class="version-list">
+      {% for version in versions %}
+      <article>
+        <div><b>Версия {{ version.version_no }}</b><time>{{ version.archived_at[:19].replace("T", " ") }}</time></div>
+        <p>{{ version.text or version.caption or "[Без текста]" }}</p>
+      </article>
+      {% else %}
+      <div class="empty-state compact"><span>✓</span><p>Сообщение не изменялось.</p></div>
+      {% endfor %}
+    </div>
+  </section>
+</div>
+{% endblock %}

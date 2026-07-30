@@ -1,0 +1,81 @@
+{% extends "base.html" %}
+{% block title %}{{ gift.unique_name or gift.title }} · ReSpy{% endblock %}
+{% block content %}
+<nav class="breadcrumbs">
+  <a href="/">Архив</a><span>›</span>
+  <a href="/gifts">Подарки</a><span>›</span>
+  <b>{{ gift.unique_name or gift.title }}</b>
+</nav>
+
+<section class="gift-detail-head">
+  <div class="gift-orb large">🎁</div>
+  <div>
+    <p class="eyebrow">Подарок</p>
+    <h1>
+      {{ gift.unique_name or gift.title }}
+      {% if gift.unique_number %}<span>#{{ gift.unique_number }}</span>{% endif %}
+    </h1>
+    <p class="muted">
+      {{ "Отправлен" if gift.direction == "sent" else "Получен от" }}
+      {{ gift.counterparty_name }}
+    </p>
+  </div>
+  <span class="gift-status {{ gift.status }}">
+    {{ status_labels.get(gift.status, gift.status) }}
+    {% if gift.confidence == "inferred" %}<i>причина не подтверждена</i>{% endif %}
+  </span>
+</section>
+
+{% if gift.status == "missing" %}
+<div class="uncertainty-note">
+  <b>⚠️ Что значит «исчез»</b>
+  Подарок больше не найден в доступном инвентаре. Это может означать обмен на
+  Stars, возврат, апгрейд или перенос. Ручное скрытие с профиля Bot API
+  отдельно не показывает.
+</div>
+{% endif %}
+
+<div class="detail-grid">
+  <section class="panel detail-card">
+    <h2>Свойства</h2>
+    <dl class="metadata">
+      <div><dt>Gift ID</dt><dd>{{ gift.gift_id }}</dd></div>
+      <div><dt>Направление</dt><dd>{{ "Исходящий" if gift.direction == "sent" else "Входящий" }}</dd></div>
+      <div><dt>Стоимость</dt><dd>{{ gift.star_count or "—" }} Stars</dd></div>
+      <div><dt>Обмен</dt><dd>{{ gift.convert_star_count or "—" }} Stars</dd></div>
+      <div><dt>Апгрейд</dt><dd>{{ gift.upgrade_star_count or "—" }} Stars</dd></div>
+      <div><dt>Первое событие</dt><dd>{{ gift.first_seen_at[:19].replace("T", " ") }}</dd></div>
+    </dl>
+    {% if gift.gift_kind == "unique" %}
+    <h2 class="subheading">Уникальные атрибуты</h2>
+    <dl class="metadata rarity-grid">
+      <div><dt>Модель</dt><dd>{{ gift.model_name }} · {{ gift.model_rarity }}/1000</dd></div>
+      <div><dt>Символ</dt><dd>{{ gift.symbol_name }} · {{ gift.symbol_rarity }}/1000</dd></div>
+      <div><dt>Фон</dt><dd>{{ gift.backdrop_name }} · {{ gift.backdrop_rarity }}/1000</dd></div>
+      <div><dt>Происхождение</dt><dd>{{ gift.origin or "—" }}</dd></div>
+    </dl>
+    {% endif %}
+    <a class="primary-button inline" href="/chats/{{ gift.connection_id }}/{{ gift.chat_id }}">
+      Открыть связанный чат →
+    </a>
+  </section>
+
+  <section class="panel detail-card">
+    <h2>История</h2>
+    <div class="gift-timeline">
+      {% for event in events %}
+      <article class="{{ event.confidence }}">
+        <i></i>
+        <div>
+          <b>{{ event_labels.get(event.event_type, event.event_type) }}</b>
+          <time>{{ event.created_at[:19].replace("T", " ") }}</time>
+          {% if event.confidence == "inferred" %}
+          <small>Telegram не подтвердил точную причину</small>
+          {% endif %}
+        </div>
+      </article>
+      {% endfor %}
+    </div>
+  </section>
+</div>
+{% endblock %}

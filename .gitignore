@@ -1,0 +1,12 @@
+.env
+.DS_Store
+.venv/
+__pycache__/
+.pytest_cache/
+*.py[cod]
+data/*.db
+data/*.db-*
+data/*.session*
+data/media/*
+!data/media/.gitkeep
+data/

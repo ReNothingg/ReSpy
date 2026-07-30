@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block title %}Вход · ReSpy{% endblock %}
+{% block body %}
+<main class="login-shell">
+  <section class="login-card">
+    <div class="login-logo">R</div>
+    <p class="eyebrow">Telegram Business</p>
+    <h1>ReSpy</h1>
+    <p class="muted">В Telegram вход выполнится автоматически. В браузере используйте пароль.</p>
+    <form method="post" action="/login" class="login-form">
+      <input type="hidden" name="next" value="{{ next }}">
+      <label for="password">Пароль панели</label>
+      <input id="password" name="password" type="password" autocomplete="current-password"
+             placeholder="Введите пароль" autofocus required>
+      {% if error %}<p class="form-error">{{ error }}</p>{% endif %}
+      <button class="primary-button" type="submit">Открыть архив <span>→</span></button>
+    </form>
+    <p class="telegram-auth-status" hidden>Проверяем Telegram…</p>
+    <p class="privacy-note">Данные хранятся на вашем сервере</p>
+  </section>
+</main>
+{% endblock %}
