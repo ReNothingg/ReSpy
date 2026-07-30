@@ -375,7 +375,6 @@ class TelegramArchive:
         self.db = db
         self.settings = settings
         self._calculator_edit_deadlines: dict[tuple[str, int, int], float] = {}
-        self._calculator_delete_deadlines: dict[tuple[str, int, int], float] = {}
         self._mute_delete_deadlines: dict[tuple[str, int, int], float] = {}
         self._mute_edit_deadlines: dict[tuple[str, int, int], float] = {}
         self._muted_chats: dict[tuple[str, int], int] | None = None
@@ -744,52 +743,42 @@ class TelegramArchive:
 
         expression = (match.group(1) or "").strip()
         if not expression:
-            await self._delete_business_calculator_message(message)
+            await self._animate_business_calculator(
+                message,
+                [
+                    "🧮 <b>Калькулятор</b>\n"
+                    "Напиши выражение после команды:\n"
+                    "<code>/cal 2+2</code>"
+                ],
+            )
             return True
 
         try:
             calculation = calculate(expression)
-        except CalculatorError:
-            await self._delete_business_calculator_message(message)
+        except CalculatorError as exc:
+            await self._animate_business_calculator(
+                message,
+                [
+                    "⚠️ <b>Не получилось посчитать</b>\n"
+                    f"{html.escape(str(exc))}\n"
+                    "Пример: <code>/cal 2+2</code>"
+                ],
+            )
             return True
 
         await self._animate_business_calculator(
             message,
             [html.escape(calculation.result)],
         )
-        return True
-
-    async def _delete_business_calculator_message(
-        self,
-        message: Message,
-    ) -> None:
-        connection_id = message.business_connection_id
-        if not connection_id:
-            return
-        key = (connection_id, message.chat.id, message.message_id)
-        loop = asyncio.get_running_loop()
-        self._calculator_delete_deadlines[key] = loop.time() + 15
-        loop.call_later(
-            15,
-            self._calculator_delete_deadlines.pop,
-            key,
-            None,
+        logger.info(
+            "business_calculator connection=%s chat=%s message=%s expression=%r result=%s",
+            connection_id,
+            message.chat.id,
+            message.message_id,
+            expression,
+            calculation.result,
         )
-        try:
-            await self.bot.delete_business_messages(
-                business_connection_id=connection_id,
-                message_ids=[message.message_id],
-            )
-        except Exception:
-            self._calculator_delete_deadlines.pop(key, None)
-            logger.warning(
-                "Could not delete invalid calculator command "
-                "connection=%s chat=%s message=%s",
-                connection_id,
-                message.chat.id,
-                message.message_id,
-                exc_info=True,
-            )
+        return True
 
     async def _animate_business_calculator(
         self,
@@ -884,18 +873,6 @@ class TelegramArchive:
             self._calculator_edit_deadlines.pop(key, None)
         key = (connection_id, message.chat.id, message.message_id)
         return self._calculator_edit_deadlines.get(key, 0) > now
-
-    def _is_calculator_delete(
-        self,
-        connection_id: str,
-        chat_id: int,
-        message_id: int,
-    ) -> bool:
-        key = (connection_id, chat_id, message_id)
-        return (
-            self._calculator_delete_deadlines.get(key, 0)
-            > asyncio.get_running_loop().time()
-        )
 
     def _is_mute_delete(
         self,
@@ -1118,12 +1095,6 @@ class TelegramArchive:
                 utcnow(),
             )
             if not changed:
-                continue
-            if self._is_calculator_delete(
-                event.business_connection_id,
-                event.chat.id,
-                message_id,
-            ):
                 continue
             if self._is_mute_delete(
                 event.business_connection_id,
