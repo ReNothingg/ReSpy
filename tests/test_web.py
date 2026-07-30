@@ -52,7 +52,9 @@ async def test_panel_requires_login_and_renders(tmp_path: Path) -> None:
         client.cookies.set(COOKIE_NAME, make_session(config.session_secret))
         response = await client.get("/")
         assert response.status_code == 200
-        assert "<h1>Чаты</h1>" in response.text
+        assert 'id="chat-index-title">Чаты</h1>' in response.text
+        assert 'aria-label="Поиск по чатам"' in response.text
+        assert "Сохранённые чаты" not in response.text
         assert "/static/style.css" in response.text
         assert "/static/app.js" in response.text
 

@@ -1,97 +1,52 @@
 {% extends "base.html" %}
-{% block title %}Архив · ReSpy{% endblock %}
+{% block title %}Чаты · ReSpy{% endblock %}
 {% block content %}
-<section class="hero">
-  <div>
-    <p class="eyebrow">Архив</p>
-    <h1>Чаты</h1>
-    <p class="muted">Сохранённые сообщения, удаления и история изменений.</p>
-  </div>
-  <div class="connection-pill">
-    <span class="pulse"></span>
-    <span><small>Подключений</small><b>{{ stats.connections }}</b></span>
+<section class="chat-index" aria-labelledby="chat-index-title">
+  <h1 class="visually-hidden" id="chat-index-title">Чаты</h1>
+  <form class="chat-index-search" method="get" role="search">
+    <span aria-hidden="true">⌕</span>
+    <input
+      name="q"
+      value="{{ query }}"
+      placeholder="Поиск"
+      aria-label="Поиск по чатам"
+      autocomplete="off"
+    >
+    {% if query %}
+    <a href="/" aria-label="Очистить поиск">×</a>
+    {% endif %}
+  </form>
+  <div class="chat-list">
+    {% for chat in chats %}
+    <a class="chat-row" href="/chats/{{ chat.connection_id }}/{{ chat.chat_id }}">
+      <div class="avatar">
+        {% if chat.avatar_file_id %}
+        <img src="/avatars/{{ chat.connection_id }}/{{ chat.chat_id }}" alt="" loading="lazy">
+        {% else %}
+        {{ chat.title[:1] | upper }}
+        {% endif %}
+      </div>
+      <div class="chat-main">
+        <div class="chat-title">
+          <strong>{{ chat.title }}</strong>
+          {% if chat.username %}<small>@{{ chat.username }}</small>{% endif %}
+        </div>
+        <div class="chat-meta">
+          <span>{{ chat.message_count }} сообщений</span>
+          {% if chat.deleted_count %}<span class="danger-text">⌫ {{ chat.deleted_count }}</span>{% endif %}
+          {% if chat.edited_count %}<span class="warning-text">✎ {{ chat.edited_count }}</span>{% endif %}
+        </div>
+      </div>
+      <time>{{ chat.last_message_at[:16].replace("T", " ") if chat.last_message_at else "—" }}</time>
+      <span class="chevron">›</span>
+    </a>
+    {% else %}
+    <div class="empty-state">
+      <span>💬</span>
+      <h3>Пока пусто</h3>
+      <p>Новые диалоги появятся здесь после подключения Telegram Business.</p>
+    </div>
+    {% endfor %}
   </div>
 </section>
-
-<div class="dashboard-grid dashboard-chats">
-  <section class="panel">
-    <div class="panel-head">
-      <div>
-        <p class="eyebrow">Архив</p>
-        <h2>Сохранённые чаты</h2>
-      </div>
-      <form class="search" method="get">
-        <span>⌕</span>
-        <input name="q" value="{{ query }}" placeholder="Поиск по чатам">
-      </form>
-    </div>
-    <div class="chat-list">
-      {% for chat in chats %}
-      <a class="chat-row" href="/chats/{{ chat.connection_id }}/{{ chat.chat_id }}">
-        <div class="avatar">
-          {% if chat.avatar_file_id %}
-          <img src="/avatars/{{ chat.connection_id }}/{{ chat.chat_id }}" alt="" loading="lazy">
-          {% else %}
-          {{ chat.title[:1] | upper }}
-          {% endif %}
-        </div>
-        <div class="chat-main">
-          <div class="chat-title">
-            <strong>{{ chat.title }}</strong>
-            {% if chat.username %}<small>@{{ chat.username }}</small>{% endif %}
-          </div>
-          <div class="chat-meta">
-            <span>{{ chat.message_count }} сообщений</span>
-            {% if chat.deleted_count %}<span class="danger-text">⌫ {{ chat.deleted_count }}</span>{% endif %}
-            {% if chat.edited_count %}<span class="warning-text">✎ {{ chat.edited_count }}</span>{% endif %}
-          </div>
-        </div>
-        <time>{{ chat.last_message_at[:16].replace("T", " ") if chat.last_message_at else "—" }}</time>
-        <span class="chevron">›</span>
-      </a>
-      {% else %}
-      <div class="empty-state">
-        <span>💬</span>
-        <h3>Пока пусто</h3>
-        <p>Подключите бота к Telegram Business — новые диалоги появятся здесь.</p>
-      </div>
-      {% endfor %}
-    </div>
-  </section>
-
-</div>
-
-<section class="stats-grid dashboard-stats">
-  <article class="stat-card">
-    <span class="stat-icon violet">Ч</span>
-    <div><strong>{{ stats.chats }}</strong><span>чатов в архиве</span></div>
-  </article>
-  <article class="stat-card">
-    <span class="stat-icon blue">С</span>
-    <div><strong>{{ stats.messages }}</strong><span>сообщений</span></div>
-  </article>
-  <article class="stat-card">
-    <span class="stat-icon red">У</span>
-    <div><strong>{{ stats.deleted }}</strong><span>удалено</span></div>
-  </article>
-  <article class="stat-card">
-    <span class="stat-icon amber">И</span>
-    <div><strong>{{ stats.edits }}</strong><span>изменений</span></div>
-  </article>
-  <a class="stat-card gift-stat" href="/gifts">
-    <span class="stat-icon gold">П</span>
-    <div><strong>{{ stats.gifts }}</strong><span>подарков под контролем</span></div>
-  </a>
-</section>
-
-{% if stats.gifts %}
-<a class="gift-banner" href="/gifts">
-  <span class="gift-banner-icon">🎁</span>
-  <span>
-    <small>Подарки</small>
-    <strong>{{ stats.gift_upgraded }} вскрыто · {{ stats.gift_missing }} исчезло</strong>
-  </span>
-  <b>Открыть →</b>
-</a>
-{% endif %}
 {% endblock %}

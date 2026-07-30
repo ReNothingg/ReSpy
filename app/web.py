@@ -157,12 +157,11 @@ def build_web_app(
     async def dashboard(request: Request, q: str = "") -> HTMLResponse:
         if not authenticated(request):
             return login_redirect(request)
-        stats = await db.dashboard_stats()
         chats = await db.list_chats(q)
         return templates.TemplateResponse(
             request,
             "dashboard.html",
-            {"stats": stats, "chats": chats, "query": q},
+            {"chats": chats, "query": q},
         )
 
     @app.get("/chats/{connection_id}/{chat_id}", response_class=HTMLResponse)
