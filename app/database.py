@@ -97,6 +97,26 @@ CREATE TABLE IF NOT EXISTS events (
     FOREIGN KEY (connection_id) REFERENCES connections(id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS muted_chats (
+    connection_id TEXT NOT NULL,
+    chat_id INTEGER NOT NULL,
+    muted_at TEXT NOT NULL,
+    after_message_id INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (connection_id, chat_id),
+    FOREIGN KEY (connection_id, chat_id)
+      REFERENCES chats(connection_id, chat_id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS chat_notification_overrides (
+    connection_id TEXT NOT NULL,
+    chat_id INTEGER NOT NULL,
+    previous_mute_until TEXT,
+    changed_at TEXT NOT NULL,
+    PRIMARY KEY (connection_id, chat_id),
+    FOREIGN KEY (connection_id, chat_id)
+      REFERENCES chats(connection_id, chat_id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS gifts (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     connection_id TEXT NOT NULL,
@@ -163,6 +183,8 @@ CREATE INDEX IF NOT EXISTS idx_messages_deleted
     ON messages(is_deleted, deleted_at DESC);
 CREATE INDEX IF NOT EXISTS idx_events_created
     ON events(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_muted_chats_connection
+    ON muted_chats(connection_id);
 CREATE INDEX IF NOT EXISTS idx_gifts_updated
     ON gifts(updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_gifts_match
@@ -208,6 +230,17 @@ class Database:
             }.items():
                 if name not in columns:
                     await db.execute(f"ALTER TABLE chats ADD COLUMN {name} {definition}")
+            muted_columns = {
+                row["name"]
+                for row in await db.execute_fetchall(
+                    "PRAGMA table_info(muted_chats)"
+                )
+            }
+            if "after_message_id" not in muted_columns:
+                await db.execute(
+                    "ALTER TABLE muted_chats "
+                    "ADD COLUMN after_message_id INTEGER NOT NULL DEFAULT 0"
+                )
             await db.commit()
 
     async def upsert_connection(self, data: dict[str, Any]) -> bool:
@@ -278,6 +311,23 @@ class Database:
             )
         return str(row[0]["id"]) if row else None
 
+    async def connection_rights(self, connection_id: str) -> dict[str, Any]:
+        async with self.connect() as db:
+            rows = await db.execute_fetchall(
+                """
+                SELECT rights_json FROM connections
+                WHERE id=? AND is_enabled=1
+                """,
+                (connection_id,),
+            )
+        if not rows:
+            return {}
+        try:
+            rights = json.loads(rows[0]["rights_json"])
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return {}
+        return rights if isinstance(rights, dict) else {}
+
     async def upsert_chat(
         self, connection_id: str, chat: dict[str, Any], message_at: str
     ) -> None:
@@ -317,6 +367,161 @@ class Database:
                     chat.get("last_name"),
                     message_at,
                 ),
+            )
+            await db.commit()
+
+    async def set_chat_muted(
+        self,
+        connection_id: str,
+        chat_id: int,
+        muted: bool,
+        changed_at: str,
+        after_message_id: int | None = None,
+    ) -> bool:
+        async with self.connect() as db:
+            rows = await db.execute_fetchall(
+                """
+                SELECT 1 FROM muted_chats
+                WHERE connection_id=? AND chat_id=?
+                """,
+                (connection_id, chat_id),
+            )
+            was_muted = bool(rows)
+            if muted and not was_muted:
+                await db.execute(
+                    """
+                    INSERT INTO muted_chats (
+                        connection_id, chat_id, muted_at, after_message_id
+                    ) VALUES (?, ?, ?, ?)
+                    """,
+                    (
+                        connection_id,
+                        chat_id,
+                        changed_at,
+                        after_message_id or 0,
+                    ),
+                )
+            elif muted and after_message_id is not None:
+                await db.execute(
+                    """
+                    UPDATE muted_chats
+                    SET muted_at=?, after_message_id=?
+                    WHERE connection_id=? AND chat_id=?
+                    """,
+                    (
+                        changed_at,
+                        after_message_id,
+                        connection_id,
+                        chat_id,
+                    ),
+                )
+            elif not muted and was_muted:
+                await db.execute(
+                    """
+                    DELETE FROM muted_chats
+                    WHERE connection_id=? AND chat_id=?
+                    """,
+                    (connection_id, chat_id),
+                )
+            changed = muted != was_muted
+            if changed:
+                await db.execute(
+                    """
+                    INSERT INTO events (
+                        connection_id, chat_id, event_type,
+                        payload_json, created_at
+                    ) VALUES (?, ?, ?, '{}', ?)
+                    """,
+                    (
+                        connection_id,
+                        chat_id,
+                        "chat_muted" if muted else "chat_unmuted",
+                        changed_at,
+                    ),
+                )
+            await db.commit()
+        return changed
+
+    async def is_chat_muted(self, connection_id: str, chat_id: int) -> bool:
+        async with self.connect() as db:
+            rows = await db.execute_fetchall(
+                """
+                SELECT 1 FROM muted_chats
+                WHERE connection_id=? AND chat_id=?
+                """,
+                (connection_id, chat_id),
+            )
+        return bool(rows)
+
+    async def muted_chat_states(self) -> list[tuple[str, int, int]]:
+        async with self.connect() as db:
+            rows = await db.execute_fetchall(
+                """
+                SELECT connection_id, chat_id, after_message_id
+                FROM muted_chats
+                """
+            )
+        return [
+            (
+                str(row["connection_id"]),
+                int(row["chat_id"]),
+                int(row["after_message_id"]),
+            )
+            for row in rows
+        ]
+
+    async def save_chat_notification_override(
+        self,
+        connection_id: str,
+        chat_id: int,
+        previous_mute_until: str | None,
+        changed_at: str,
+    ) -> bool:
+        async with self.connect() as db:
+            cursor = await db.execute(
+                """
+                INSERT OR IGNORE INTO chat_notification_overrides (
+                    connection_id, chat_id, previous_mute_until, changed_at
+                ) VALUES (?, ?, ?, ?)
+                """,
+                (
+                    connection_id,
+                    chat_id,
+                    previous_mute_until,
+                    changed_at,
+                ),
+            )
+            await db.commit()
+        return cursor.rowcount == 1
+
+    async def chat_notification_override(
+        self,
+        connection_id: str,
+        chat_id: int,
+    ) -> dict[str, Any] | None:
+        async with self.connect() as db:
+            rows = await db.execute_fetchall(
+                """
+                SELECT previous_mute_until, changed_at
+                FROM chat_notification_overrides
+                WHERE connection_id=? AND chat_id=?
+                """,
+                (connection_id, chat_id),
+            )
+        return dict(rows[0]) if rows else None
+
+    async def clear_chat_notification_override(
+        self,
+        connection_id: str,
+        chat_id: int,
+    ) -> None:
+        async with self.connect() as db:
+            await db.execute(
+                """
+                DELETE FROM chat_notification_overrides
+                WHERE connection_id=? AND chat_id=?
+                """,
+                (connection_id, chat_id),
             )
             await db.commit()
 

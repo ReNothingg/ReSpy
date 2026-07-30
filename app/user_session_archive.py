@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from telethon import TelegramClient, events, types
+from telethon import TelegramClient, events, functions, types
 
 from app.mtproto_archive import MtprotoBusinessArchive
 from app.telegram_bot import TelegramArchive
@@ -28,6 +29,8 @@ class UserSessionArchive:
         self.business_archive = business_archive
         self.settings = archive.settings
         self.db = archive.db
+        self.client: TelegramClient | None = None
+        self._notification_lock = asyncio.Lock()
 
     async def run(self) -> None:
         path = self.settings.mtproto_user_session_path
@@ -71,11 +74,110 @@ class UserSessionArchive:
                 "mtproto_user_archive_started user=%s",
                 me.id,
             )
+            self.client = client
             await client.run_until_disconnected()
         except asyncio.CancelledError:
             raise
         finally:
+            self.client = None
             await client.disconnect()
+
+    async def set_chat_muted(
+        self,
+        connection_id: str,
+        chat_id: int,
+        muted: bool,
+    ) -> bool:
+        client = self.client
+        if client is None or not client.is_connected():
+            return False
+
+        async with self._notification_lock:
+            try:
+                peer = await client.get_input_entity(chat_id)
+                notify_peer = types.InputNotifyPeer(peer=peer)
+                override = await self.db.chat_notification_override(
+                    connection_id,
+                    chat_id,
+                )
+                if muted:
+                    created_override = False
+                    if override is None:
+                        current = await client(
+                            functions.account.GetNotifySettingsRequest(
+                                peer=notify_peer
+                            )
+                        )
+                        previous = getattr(current, "mute_until", None)
+                        if previous is not None and previous.tzinfo is None:
+                            previous = previous.replace(tzinfo=UTC)
+                        created_override = (
+                            await self.db.save_chat_notification_override(
+                                connection_id,
+                                chat_id,
+                                previous.isoformat() if previous else None,
+                                datetime.now(UTC).isoformat(timespec="seconds"),
+                            )
+                        )
+                    try:
+                        await client(
+                            functions.account.UpdateNotifySettingsRequest(
+                                peer=notify_peer,
+                                settings=types.InputPeerNotifySettings(
+                                    mute_until=datetime.fromtimestamp(
+                                        2_147_483_647,
+                                        UTC,
+                                    )
+                                ),
+                            )
+                        )
+                    except Exception:
+                        if created_override:
+                            await self.db.clear_chat_notification_override(
+                                connection_id,
+                                chat_id,
+                            )
+                        raise
+                else:
+                    previous_mute_until = (
+                        override.get("previous_mute_until")
+                        if override
+                        else None
+                    )
+                    restore_until = (
+                        datetime.fromisoformat(previous_mute_until)
+                        if previous_mute_until
+                        else datetime.fromtimestamp(0, UTC)
+                    )
+                    if restore_until.tzinfo is None:
+                        restore_until = restore_until.replace(tzinfo=UTC)
+                    await client(
+                        functions.account.UpdateNotifySettingsRequest(
+                            peer=notify_peer,
+                            settings=types.InputPeerNotifySettings(
+                                mute_until=restore_until
+                            ),
+                        )
+                    )
+                    if override:
+                        await self.db.clear_chat_notification_override(
+                            connection_id,
+                            chat_id,
+                        )
+                logger.info(
+                    "chat_notifications_updated chat=%s muted=%s",
+                    chat_id,
+                    muted,
+                )
+                return True
+            except Exception:
+                logger.warning(
+                    "Could not update chat notifications chat=%s muted=%s",
+                    chat_id,
+                    muted,
+                    exc_info=True,
+                )
+                return False
 
     async def handle_update(
         self,

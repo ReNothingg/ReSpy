@@ -94,8 +94,10 @@ async def serve() -> None:
 
     bot = Bot(settings.bot_token)
     archive = TelegramArchive(bot, db, settings)
+    await archive.initialize()
     mtproto_archive = MtprotoBusinessArchive(archive)
     user_session_archive = UserSessionArchive(archive, mtproto_archive)
+    archive.chat_notification_manager = user_session_archive
     dispatcher = build_dispatcher(
         archive,
         mtproto_archive.request_catch_up,
@@ -116,6 +118,8 @@ async def serve() -> None:
             BotCommand(command="start", description="Статус и подключение"),
             BotCommand(command="id", description="Показать Telegram ID"),
             BotCommand(command="cal", description="Красивый калькулятор"),
+            BotCommand(command="mute", description="Удалять входящие в чате"),
+            BotCommand(command="unmute", description="Отключить мут в чате"),
             BotCommand(command="gifts", description="Статистика подарков"),
             BotCommand(command="archive", description="Открыть веб-архив"),
         ]

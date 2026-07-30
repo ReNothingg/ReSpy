@@ -49,6 +49,12 @@ CALCULATOR_HELP = (
     "<code>/cal 15% от 2400</code>"
 )
 
+BUSINESS_MUTE_COMMAND = re.compile(
+    r"/(?P<command>unmute|mute)(?:@[A-Za-z0-9_]+)?"
+    r"(?:[ \t]+(?P<visible_text>[\s\S]*))?",
+    flags=re.IGNORECASE,
+)
+
 
 def utcnow() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds")
@@ -314,6 +320,17 @@ class TelegramArchive:
         self.settings = settings
         self._calculator_edit_deadlines: dict[tuple[str, int, int], float] = {}
         self._calculator_delete_deadlines: dict[tuple[str, int, int], float] = {}
+        self._mute_delete_deadlines: dict[tuple[str, int, int], float] = {}
+        self._mute_edit_deadlines: dict[tuple[str, int, int], float] = {}
+        self._muted_chats: dict[tuple[str, int], int] | None = None
+        self.chat_notification_manager: Any | None = None
+
+    async def initialize(self) -> None:
+        self._muted_chats = {
+            (connection_id, chat_id): after_message_id
+            for connection_id, chat_id, after_message_id
+            in await self.db.muted_chat_states()
+        }
 
     async def notify_unauthorized_start(self, user: Any) -> None:
         name = html.escape(user_name(user))
@@ -380,6 +397,16 @@ class TelegramArchive:
             return
 
         data = message_data(message, owner_id)
+        mute_delete_task: asyncio.Task[None] | None = None
+        if not data["is_outgoing"] and await self._should_delete_muted_message(
+            connection_id,
+            message.chat.id,
+            message.message_id,
+        ):
+            mute_delete_task = asyncio.create_task(
+                self._delete_muted_business_message(message),
+                name=f"mute-delete-{message.chat.id}-{message.message_id}",
+            )
         chat = message.chat.model_dump(mode="json", exclude_none=True)
         await self.db.upsert_chat(connection_id, chat, data["sent_at"])
         media = media_info(message)
@@ -394,7 +421,11 @@ class TelegramArchive:
                 }
             )
         row_id, inserted = await self.db.store_message(data)
+        if await self.handle_business_mute_command(message):
+            return
         await self.handle_business_calculator(message)
+        if mute_delete_task:
+            await mute_delete_task
         await self._refresh_chat_avatar(connection_id, message.chat.id)
         if inserted and media:
             await self._download_media(
@@ -414,6 +445,227 @@ class TelegramArchive:
             data["content_type"],
             data["is_outgoing"],
         )
+
+    async def _should_delete_muted_message(
+        self,
+        connection_id: str,
+        chat_id: int,
+        message_id: int,
+    ) -> bool:
+        key = (connection_id, chat_id)
+        if self._muted_chats is not None:
+            after_message_id = self._muted_chats.get(key)
+            return (
+                after_message_id is not None
+                and message_id > after_message_id
+            )
+        if not await self.db.is_chat_muted(connection_id, chat_id):
+            return False
+        states = await self.db.muted_chat_states()
+        return any(
+            state_connection_id == connection_id
+            and state_chat_id == chat_id
+            and message_id > after_message_id
+            for state_connection_id, state_chat_id, after_message_id in states
+        )
+
+    async def handle_business_mute_command(self, message: Message) -> bool:
+        connection_id = message.business_connection_id
+        if not connection_id or not message.text or not message.from_user:
+            return False
+        owner_id = await self.db.connection_owner(connection_id)
+        if (
+            owner_id != self.settings.owner_telegram_id
+            or message.from_user.id != owner_id
+        ):
+            return False
+
+        match = BUSINESS_MUTE_COMMAND.fullmatch(message.text.strip())
+        if match is None:
+            return False
+
+        muted = match.group("command").lower() == "mute"
+        visible_text = (match.group("visible_text") or "").strip()
+        chat_name = (
+            message.chat.full_name
+            or message.chat.title
+            or str(message.chat.id)
+        )
+        if muted:
+            rights = await self.db.connection_rights(connection_id)
+            if not rights.get("can_delete_all_messages", False):
+                await self._notify(
+                    owner_id,
+                    "⚠️ <b>Не удалось включить мут</b>\n\n"
+                    "У бизнес-бота нет права удалять все сообщения. "
+                    "Разреши это право в настройках Telegram Business "
+                    "и отправь <code>/mute</code> ещё раз.",
+                )
+                return True
+
+        notification_changed = False
+        if muted:
+            changed = await self.db.set_chat_muted(
+                connection_id,
+                message.chat.id,
+                True,
+                utcnow(),
+                after_message_id=message.message_id,
+            )
+            if self._muted_chats is not None:
+                self._muted_chats[
+                    (connection_id, message.chat.id)
+                ] = message.message_id
+        else:
+            changed = await self.db.set_chat_muted(
+                connection_id,
+                message.chat.id,
+                False,
+                utcnow(),
+            )
+            if self._muted_chats is not None:
+                self._muted_chats.pop((connection_id, message.chat.id), None)
+
+        await self._render_mute_command_message(message, visible_text)
+        if self.chat_notification_manager is not None:
+            notification_changed = (
+                await self.chat_notification_manager.set_chat_muted(
+                    connection_id,
+                    message.chat.id,
+                    muted,
+                )
+            )
+        state = "включён" if muted else "выключен"
+        unchanged = (
+            " (уже был включён)"
+            if muted and not changed
+            else " (уже был выключен)"
+            if not muted and not changed
+            else ""
+        )
+        await self._notify(
+            owner_id,
+            f"{'🔇' if muted else '🔊'} <b>Мут {state}</b>{unchanged}\n\n"
+            f"👤 {telegram_user_link(chat_name, message.chat.id)}\n"
+            + (
+                "Все сообщения собеседника после команды будут сразу удаляться. "
+                "Твои сообщения останутся в чате.\n\n"
+                "Чтобы отключить: <code>/unmute</code>"
+                if muted
+                else "Новые сообщения собеседника больше не удаляются."
+            )
+            + (
+                "\n\n🔕 Уведомления чата изменены."
+                if notification_changed
+                else "\n\n⚠️ Звук чата не изменён: пользовательская "
+                "MTProto-сессия не подключена."
+            ),
+        )
+        logger.info(
+            "business_chat_mute connection=%s chat=%s muted=%s changed=%s",
+            connection_id,
+            message.chat.id,
+            muted,
+            changed,
+        )
+        return True
+
+    async def _render_mute_command_message(
+        self,
+        message: Message,
+        visible_text: str,
+    ) -> None:
+        if not visible_text:
+            await self._delete_muted_business_message(message)
+            return
+
+        connection_id = message.business_connection_id
+        if not connection_id:
+            return
+        key = (connection_id, message.chat.id, message.message_id)
+        loop = asyncio.get_running_loop()
+        self._mute_edit_deadlines[key] = loop.time() + 30
+        loop.call_later(30, self._mute_edit_deadlines.pop, key, None)
+        try:
+            await self.bot.edit_message_text(
+                business_connection_id=connection_id,
+                chat_id=message.chat.id,
+                message_id=message.message_id,
+                text=visible_text,
+            )
+        except Exception:
+            self._mute_edit_deadlines.pop(key, None)
+            logger.warning(
+                "Could not hide mute command by editing "
+                "connection=%s chat=%s message=%s",
+                connection_id,
+                message.chat.id,
+                message.message_id,
+                exc_info=True,
+            )
+            await self._delete_muted_business_message(message)
+            try:
+                await self.bot.send_message(
+                    business_connection_id=connection_id,
+                    chat_id=message.chat.id,
+                    text=visible_text,
+                )
+            except Exception:
+                logger.warning(
+                    "Could not resend mute command text "
+                    "connection=%s chat=%s message=%s",
+                    connection_id,
+                    message.chat.id,
+                    message.message_id,
+                    exc_info=True,
+                )
+
+    async def _delete_muted_business_message(self, message: Message) -> None:
+        connection_id = message.business_connection_id
+        if not connection_id:
+            return
+        await self._delete_muted_business_messages(
+            connection_id,
+            message.chat.id,
+            [message.message_id],
+        )
+
+    async def _delete_muted_business_messages(
+        self,
+        connection_id: str,
+        chat_id: int,
+        message_ids: list[int],
+    ) -> int:
+        if not message_ids:
+            return 0
+        loop = asyncio.get_running_loop()
+        deleted = 0
+        for offset in range(0, len(message_ids), 100):
+            batch = message_ids[offset : offset + 100]
+            keys = [(connection_id, chat_id, message_id) for message_id in batch]
+            deadline = loop.time() + 30
+            for key in keys:
+                self._mute_delete_deadlines[key] = deadline
+                loop.call_later(30, self._mute_delete_deadlines.pop, key, None)
+            try:
+                await self.bot.delete_business_messages(
+                    business_connection_id=connection_id,
+                    message_ids=batch,
+                )
+            except Exception:
+                for key in keys:
+                    self._mute_delete_deadlines.pop(key, None)
+                logger.warning(
+                    "Could not delete muted business messages "
+                    "connection=%s chat=%s messages=%s",
+                    connection_id,
+                    chat_id,
+                    batch,
+                    exc_info=True,
+                )
+            else:
+                deleted += len(batch)
+        return deleted
 
     async def handle_business_calculator(self, message: Message) -> bool:
         connection_id = message.business_connection_id
@@ -589,6 +841,28 @@ class TelegramArchive:
             > asyncio.get_running_loop().time()
         )
 
+    def _is_mute_delete(
+        self,
+        connection_id: str,
+        chat_id: int,
+        message_id: int,
+    ) -> bool:
+        key = (connection_id, chat_id, message_id)
+        return (
+            self._mute_delete_deadlines.get(key, 0)
+            > asyncio.get_running_loop().time()
+        )
+
+    def _is_mute_edit(self, message: Message) -> bool:
+        connection_id = message.business_connection_id
+        if not connection_id:
+            return False
+        key = (connection_id, message.chat.id, message.message_id)
+        return (
+            self._mute_edit_deadlines.get(key, 0)
+            > asyncio.get_running_loop().time()
+        )
+
     async def _download_media(
         self,
         row_id: int,
@@ -746,7 +1020,7 @@ class TelegramArchive:
             data["content_type"],
             changed,
         )
-        if self._is_calculator_edit(message):
+        if self._is_calculator_edit(message) or self._is_mute_edit(message):
             return
         if not changed or not old:
             return
@@ -790,6 +1064,12 @@ class TelegramArchive:
             if not changed:
                 continue
             if self._is_calculator_delete(
+                event.business_connection_id,
+                event.chat.id,
+                message_id,
+            ):
+                continue
+            if self._is_mute_delete(
                 event.business_connection_id,
                 event.chat.id,
                 message_id,
@@ -1305,6 +1585,20 @@ def build_dispatcher(
         except TelegramBadRequest as exc:
             logger.info("Calculator copy button unavailable: %s", exc.message)
             await message.answer(final_text, parse_mode=ParseMode.HTML)
+
+    @router.message(Command("mute", "unmute"))
+    async def business_mute_help(message: Message) -> None:
+        if not message.from_user:
+            return
+        if message.from_user.id != archive.settings.owner_telegram_id:
+            await message.answer("⛔ Этот бот является личным архивом.")
+            return
+        await message.answer(
+            "🔇 <b>Мут работает внутри Business-диалога</b>\n\n"
+            "Отправь <code>/mute</code> прямо в чат с нужным собеседником.\n"
+            "Чтобы отключить — <code>/unmute</code> в том же чате.",
+            parse_mode=ParseMode.HTML,
+        )
 
     @router.message(Command("gifts"))
     async def gifts_summary(message: Message) -> None:

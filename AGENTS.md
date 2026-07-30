@@ -1,0 +1,1 @@
+Every new feature must work through Telegram Business. Avoid using MTProto whenever the same functionality can be implemented through the Telegram Bot API.
