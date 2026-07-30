@@ -51,6 +51,14 @@ CALCULATOR_HELP = (
     "<code>/cal 15% от 2400</code>"
 )
 
+CURRENT_TOOLS = (
+    "🧮 <code>/cal</code> — калькулятор\n"
+    "🔇 <code>/mute</code> и <code>/unmute</code> — управление мутом Business-чата\n"
+    "📚 <code>/archive</code> — открыть архив сообщений\n"
+    "🎁 <code>/gifts</code> — статистика подарков\n"
+    "🆔 <code>/id</code> — показать Telegram ID"
+)
+
 BUSINESS_MUTE_COMMAND = re.compile(
     r"/(?P<command>unmute|mute)(?:@[A-Za-z0-9_]+)?"
     r"(?:[ \t]+(?P<visible_text>[\s\S]*))?",
@@ -61,6 +69,19 @@ _DROP_JSON_VALUE = object()
 
 def utcnow() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds")
+
+
+def start_message(user_id: int) -> str:
+    return (
+        "🛡 <b>ReSpy готов</b>\n\n"
+        "Подключи бота в Telegram → Настройки → Telegram Business → Чат-боты.\n"
+        "После подключения я буду сохранять сообщения и присылать копии "
+        "изменённых и удалённых сообщений. Подарки, апгрейды и исчезновения "
+        "подарков тоже отслеживаются.\n\n"
+        "<b>Текущие инструменты:</b>\n"
+        f"{CURRENT_TOOLS}\n\n"
+        f"Твой Telegram ID: <code>{user_id}</code>"
+    )
 
 
 def user_name(user: Any | None) -> str:
@@ -1536,13 +1557,7 @@ def build_dispatcher(
             await message.answer("⛔ Этот бот является личным архивом.")
             return
         await message.answer(
-            "🛡 <b>ReSpy готов</b>\n\n"
-            "Подключи бота в Telegram → Настройки → Telegram Business → Чат-боты.\n"
-            "После подключения я буду сохранять сообщения и присылать копии "
-            "изменённых и удалённых сообщений. Подарки, апгрейды и исчезновения "
-            "подарков тоже отслеживаются.\n\n"
-            "🧮 Быстрый калькулятор: <code>/cal 15% от 2400</code>\n\n"
-            f"Твой Telegram ID: <code>{message.from_user.id}</code>",
+            start_message(message.from_user.id),
             parse_mode=ParseMode.HTML,
         )
 

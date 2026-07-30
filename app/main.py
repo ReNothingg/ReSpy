@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import sqlite3
 from contextlib import suppress
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -21,6 +22,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 RuntimeMode = Literal["all", "bot", "web"]
+DATABASE_STARTUP_ATTEMPTS = 6
 
 MTPROTO_DISABLED_MESSAGE = (
     "⚠️ <b>Скрытые фото отключены</b>\n\n"
@@ -87,12 +89,37 @@ async def serve(mode: RuntimeMode = "all") -> None:
     )
     settings.media_dir.mkdir(parents=True, exist_ok=True)
     db = Database(settings.database_path)
-    await db.initialize()
-    legacy_avatar_root = (settings.database_path.parent / "avatars").resolve()
-    for raw_path in await db.clear_legacy_avatar_paths():
-        path = Path(raw_path).resolve()
-        if legacy_avatar_root in path.parents:
-            path.unlink(missing_ok=True)
+    if mode in {"all", "bot"}:
+        for attempt in range(1, DATABASE_STARTUP_ATTEMPTS + 1):
+            try:
+                await db.initialize()
+                legacy_avatar_root = (
+                    settings.database_path.parent / "avatars"
+                ).resolve()
+                for raw_path in await db.clear_legacy_avatar_paths():
+                    path = Path(raw_path).resolve()
+                    if legacy_avatar_root in path.parents:
+                        path.unlink(missing_ok=True)
+                break
+            except sqlite3.OperationalError as error:
+                if (
+                    "locked" not in str(error).lower()
+                    or attempt == DATABASE_STARTUP_ATTEMPTS
+                ):
+                    raise
+                delay = min(attempt * 2, 10)
+                logger.warning(
+                    "Database is locked during bot startup; retrying in %ss "
+                    "(attempt %s/%s)",
+                    delay,
+                    attempt,
+                    DATABASE_STARTUP_ATTEMPTS,
+                )
+                await asyncio.sleep(delay)
+    elif not settings.database_path.is_file():
+        raise RuntimeError(
+            "Database is not initialized yet; start app.bot_main before app.web_main"
+        )
 
     bot: Any = None
     dispatcher = None
