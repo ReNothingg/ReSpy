@@ -5,6 +5,8 @@ import hashlib
 import html
 import logging
 import mimetypes
+import re
+import secrets
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -18,6 +20,7 @@ from aiogram.filters import Command
 from aiogram.types import (
     BusinessConnection,
     BusinessMessagesDeleted,
+    CopyTextButton,
     FSInputFile,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
@@ -25,12 +28,26 @@ from aiogram.types import (
     WebAppInfo,
 )
 
+from app.calculator import Calculation, CalculatorError, calculate
 from app.config import Settings
 from app.database import Database
 
 
 logger = logging.getLogger(__name__)
 router = Router(name="respy")
+
+
+CALCULATOR_HELP = (
+    "🧮 <b>Калькулятор ReSpy</b>\n\n"
+    "Напиши выражение после команды:\n"
+    "<code>/cal (1250 + 349) * 0.85</code>\n\n"
+    "Работают <code>+ − × ÷ ^ %</code>, скобки, <code>pi</code>, "
+    "<code>sqrt</code>, <code>sin</code>, <code>cos</code>, "
+    "<code>ln</code>, <code>round</code>, <code>min</code>, "
+    "<code>max</code> и <code>factorial</code>.\n\n"
+    "Проценты тоже по-человечески:\n"
+    "<code>/cal 15% от 2400</code>"
+)
 
 
 def utcnow() -> str:
@@ -295,6 +312,8 @@ class TelegramArchive:
         self.bot = bot
         self.db = db
         self.settings = settings
+        self._calculator_edit_deadlines: dict[tuple[str, int, int], float] = {}
+        self._calculator_delete_deadlines: dict[tuple[str, int, int], float] = {}
 
     async def notify_unauthorized_start(self, user: Any) -> None:
         name = html.escape(user_name(user))
@@ -363,7 +382,6 @@ class TelegramArchive:
         data = message_data(message, owner_id)
         chat = message.chat.model_dump(mode="json", exclude_none=True)
         await self.db.upsert_chat(connection_id, chat, data["sent_at"])
-        await self._refresh_chat_avatar(connection_id, message.chat.id)
         media = media_info(message)
         if media:
             data.update(
@@ -376,6 +394,8 @@ class TelegramArchive:
                 }
             )
         row_id, inserted = await self.db.store_message(data)
+        await self.handle_business_calculator(message)
+        await self._refresh_chat_avatar(connection_id, message.chat.id)
         if inserted and media:
             await self._download_media(
                 row_id=row_id,
@@ -393,6 +413,180 @@ class TelegramArchive:
             message.message_id,
             data["content_type"],
             data["is_outgoing"],
+        )
+
+    async def handle_business_calculator(self, message: Message) -> bool:
+        connection_id = message.business_connection_id
+        if not connection_id or not message.text or not message.from_user:
+            return False
+        owner_id = await self.db.connection_owner(connection_id)
+        if (
+            owner_id != self.settings.owner_telegram_id
+            or message.from_user.id != owner_id
+        ):
+            return False
+
+        match = re.fullmatch(
+            r"/cal(?:@[A-Za-z0-9_]+)?(?:\s+([\s\S]*))?",
+            message.text.strip(),
+            flags=re.IGNORECASE,
+        )
+        if match is None:
+            return False
+
+        expression = (match.group(1) or "").strip()
+        if not expression:
+            await self._delete_business_calculator_message(message)
+            return True
+
+        try:
+            calculation = calculate(expression)
+        except CalculatorError:
+            await self._delete_business_calculator_message(message)
+            return True
+
+        await self._animate_business_calculator(
+            message,
+            [html.escape(calculation.result)],
+        )
+        return True
+
+    async def _delete_business_calculator_message(
+        self,
+        message: Message,
+    ) -> None:
+        connection_id = message.business_connection_id
+        if not connection_id:
+            return
+        key = (connection_id, message.chat.id, message.message_id)
+        loop = asyncio.get_running_loop()
+        self._calculator_delete_deadlines[key] = loop.time() + 15
+        loop.call_later(
+            15,
+            self._calculator_delete_deadlines.pop,
+            key,
+            None,
+        )
+        try:
+            await self.bot.delete_business_messages(
+                business_connection_id=connection_id,
+                message_ids=[message.message_id],
+            )
+        except Exception:
+            self._calculator_delete_deadlines.pop(key, None)
+            logger.warning(
+                "Could not delete invalid calculator command "
+                "connection=%s chat=%s message=%s",
+                connection_id,
+                message.chat.id,
+                message.message_id,
+                exc_info=True,
+            )
+
+    async def _animate_business_calculator(
+        self,
+        message: Message,
+        stages: list[str],
+    ) -> None:
+        connection_id = message.business_connection_id
+        if not connection_id:
+            return
+        key = (connection_id, message.chat.id, message.message_id)
+        loop = asyncio.get_running_loop()
+        self._calculator_edit_deadlines[key] = loop.time() + 15
+        loop.call_later(
+            15,
+            self._calculator_edit_deadlines.pop,
+            key,
+            None,
+        )
+
+        final_text = stages[-1]
+        for index, text in enumerate(stages):
+            try:
+                await self.bot.edit_message_text(
+                    business_connection_id=connection_id,
+                    chat_id=message.chat.id,
+                    message_id=message.message_id,
+                    text=text,
+                    parse_mode=ParseMode.HTML,
+                )
+            except TelegramBadRequest as exc:
+                logger.info(
+                    "Business calculator edit unavailable connection=%s "
+                    "chat=%s message=%s error=%s",
+                    connection_id,
+                    message.chat.id,
+                    message.message_id,
+                    exc.message,
+                )
+                await self._send_business_calculator_fallback(
+                    message,
+                    final_text,
+                )
+                return
+            except Exception:
+                logger.warning(
+                    "Business calculator edit failed connection=%s chat=%s message=%s",
+                    connection_id,
+                    message.chat.id,
+                    message.message_id,
+                    exc_info=True,
+                )
+                await self._send_business_calculator_fallback(
+                    message,
+                    final_text,
+                )
+                return
+            if index < len(stages) - 1:
+                await asyncio.sleep(0.28)
+
+    async def _send_business_calculator_fallback(
+        self,
+        message: Message,
+        text: str,
+    ) -> None:
+        try:
+            await self.bot.send_message(
+                business_connection_id=message.business_connection_id,
+                chat_id=message.chat.id,
+                text=text,
+                parse_mode=ParseMode.HTML,
+            )
+        except Exception:
+            logger.warning(
+                "Business calculator fallback failed connection=%s chat=%s",
+                message.business_connection_id,
+                message.chat.id,
+                exc_info=True,
+            )
+
+    def _is_calculator_edit(self, message: Message) -> bool:
+        connection_id = message.business_connection_id
+        if not connection_id:
+            return False
+        loop = asyncio.get_running_loop()
+        now = loop.time()
+        expired = [
+            key
+            for key, deadline in self._calculator_edit_deadlines.items()
+            if deadline <= now
+        ]
+        for key in expired:
+            self._calculator_edit_deadlines.pop(key, None)
+        key = (connection_id, message.chat.id, message.message_id)
+        return self._calculator_edit_deadlines.get(key, 0) > now
+
+    def _is_calculator_delete(
+        self,
+        connection_id: str,
+        chat_id: int,
+        message_id: int,
+    ) -> bool:
+        key = (connection_id, chat_id, message_id)
+        return (
+            self._calculator_delete_deadlines.get(key, 0)
+            > asyncio.get_running_loop().time()
         )
 
     async def _download_media(
@@ -552,6 +746,8 @@ class TelegramArchive:
             data["content_type"],
             changed,
         )
+        if self._is_calculator_edit(message):
+            return
         if not changed or not old:
             return
         if is_gift:
@@ -592,6 +788,12 @@ class TelegramArchive:
                 utcnow(),
             )
             if not changed:
+                continue
+            if self._is_calculator_delete(
+                event.business_connection_id,
+                event.chat.id,
+                message_id,
+            ):
                 continue
             processed.append((message_id, stored))
 
@@ -1024,6 +1226,7 @@ def build_dispatcher(
             "После подключения я буду сохранять сообщения и присылать копии "
             "изменённых и удалённых сообщений. Подарки, апгрейды и исчезновения "
             "подарков тоже отслеживаются.\n\n"
+            "🧮 Быстрый калькулятор: <code>/cal 15% от 2400</code>\n\n"
             f"Твой Telegram ID: <code>{message.from_user.id}</code>",
             parse_mode=ParseMode.HTML,
         )
@@ -1035,6 +1238,73 @@ def build_dispatcher(
                 f"Твой Telegram ID: <code>{message.from_user.id}</code>",
                 parse_mode=ParseMode.HTML,
             )
+
+    @router.message(Command("cal"))
+    async def calculator(message: Message) -> None:
+        if not message.from_user:
+            return
+        if message.from_user.id != archive.settings.owner_telegram_id:
+            await message.answer("⛔ Этот бот является личным архивом.")
+            return
+
+        command_parts = (message.text or "").split(maxsplit=1)
+        if len(command_parts) < 2 or not command_parts[1].strip():
+            await message.answer(CALCULATOR_HELP, parse_mode=ParseMode.HTML)
+            return
+
+        expression = command_parts[1].strip()
+        try:
+            calculation = calculate(expression)
+        except CalculatorError as exc:
+            await _animate_calculator_draft(
+                archive.bot,
+                message,
+                [
+                    "",
+                    "🧮 <b>Разбираю выражение…</b>",
+                    f"⚠️ <b>{html.escape(str(exc))}</b>",
+                ],
+            )
+            await message.answer(
+                "⚠️ <b>Не получилось посчитать</b>\n\n"
+                f"{html.escape(str(exc))}\n\n"
+                "Пример: <code>/cal sqrt(144) + 15% от 200</code>",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+
+        final_text = _calculator_result_text(calculation)
+        await _animate_calculator_draft(
+            archive.bot,
+            message,
+            [
+                "",
+                "🧮 <b>Разбираю выражение…</b>\n"
+                f"<code>{html.escape(calculation.source)}</code>",
+                "⚙️ <b>Считаю…</b>\n"
+                f"<code>{html.escape(calculation.source)}</code>",
+                final_text,
+            ],
+        )
+        copy_markup = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(
+                        text="📋 Скопировать результат",
+                        copy_text=CopyTextButton(text=calculation.result),
+                    )
+                ]
+            ]
+        )
+        try:
+            await message.answer(
+                final_text,
+                parse_mode=ParseMode.HTML,
+                reply_markup=copy_markup,
+            )
+        except TelegramBadRequest as exc:
+            logger.info("Calculator copy button unavailable: %s", exc.message)
+            await message.answer(final_text, parse_mode=ParseMode.HTML)
 
     @router.message(Command("gifts"))
     async def gifts_summary(message: Message) -> None:
@@ -1106,3 +1376,38 @@ def build_dispatcher(
 
     dp.include_router(router)
     return dp
+
+
+def _calculator_result_text(calculation: Calculation) -> str:
+    return (
+        "🧮 <b>Готово</b>\n\n"
+        f"<code>{html.escape(calculation.source)}</code>\n"
+        f"<b>= <code>{html.escape(calculation.result)}</code></b>"
+    )
+
+
+async def _animate_calculator_draft(
+    bot: Bot,
+    message: Message,
+    stages: list[str],
+) -> None:
+    if message.chat.type != "private":
+        return
+    draft_id = secrets.randbelow(2_147_483_647) + 1
+    for index, text in enumerate(stages):
+        try:
+            await bot.send_message_draft(
+                chat_id=message.chat.id,
+                message_thread_id=message.message_thread_id,
+                draft_id=draft_id,
+                text=text,
+                parse_mode=ParseMode.HTML,
+            )
+        except TelegramBadRequest as exc:
+            logger.info("Animated calculator draft unavailable: %s", exc.message)
+            return
+        except Exception:
+            logger.warning("Animated calculator draft failed", exc_info=True)
+            return
+        if index < len(stages) - 1:
+            await asyncio.sleep(0.22 if index else 0.12)

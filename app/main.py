@@ -20,6 +20,49 @@ from app.web import build_web_app
 
 logger = logging.getLogger(__name__)
 
+MTPROTO_DISABLED_MESSAGE = (
+    "⚠️ <b>Скрытые фото отключены</b>\n\n"
+    "Бот запущен, остальные функции работают. Но скрытые фото "
+    "(«один просмотр») сохраняться не будут.\n\n"
+    "Чтобы включить их, авторизуй MTProto-сессию:\n"
+    "<code>python -m app.auth_user_session</code>"
+)
+
+
+async def notify_mtproto_disabled(
+    bot: Bot,
+    owner_telegram_id: int,
+) -> None:
+    try:
+        await bot.send_message(
+            owner_telegram_id,
+            MTPROTO_DISABLED_MESSAGE,
+            parse_mode="HTML",
+        )
+    except Exception:
+        logger.exception("Could not notify owner that MTProto is disabled")
+
+
+async def run_optional_user_archive(
+    user_session_archive: UserSessionArchive,
+    bot: Bot,
+    owner_telegram_id: int,
+) -> None:
+    try:
+        await user_session_archive.run()
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        logger.exception(
+            "MTProto user archive is unavailable; continuing without hidden photos"
+        )
+    else:
+        logger.warning(
+            "MTProto user archive stopped; continuing without hidden photos"
+        )
+    await notify_mtproto_disabled(bot, owner_telegram_id)
+    await asyncio.Event().wait()
+
 
 async def serve() -> None:
     settings = Settings.from_env()
@@ -72,6 +115,7 @@ async def serve() -> None:
         [
             BotCommand(command="start", description="Статус и подключение"),
             BotCommand(command="id", description="Показать Telegram ID"),
+            BotCommand(command="cal", description="Красивый калькулятор"),
             BotCommand(command="gifts", description="Статистика подарков"),
             BotCommand(command="archive", description="Открыть веб-архив"),
         ]
@@ -111,7 +155,11 @@ async def serve() -> None:
         ):
             tasks.add(
                 asyncio.create_task(
-                    user_session_archive.run(),
+                    run_optional_user_archive(
+                        user_session_archive,
+                        bot,
+                        settings.owner_telegram_id,
+                    ),
                     name="mtproto-user-archive",
                 )
             )
@@ -120,6 +168,13 @@ async def serve() -> None:
                 "MTProto user archive is disabled: authorize it with "
                 "python -m app.auth_user_session"
             )
+            await notify_mtproto_disabled(bot, settings.owner_telegram_id)
+    else:
+        logger.warning(
+            "MTProto archive is disabled: TELEGRAM_API_ID and "
+            "TELEGRAM_API_HASH are not configured"
+        )
+        await notify_mtproto_disabled(bot, settings.owner_telegram_id)
     try:
         done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
         for task in pending:
